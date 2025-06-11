@@ -1,3 +1,4 @@
 working_notes.txt
 venv/
 data/
+src/models/__pycache__/

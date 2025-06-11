@@ -9,12 +9,12 @@ os.environ['REQUESTS_CA_BUNDLE']=certifi.where()
 RAW_DIR = os.path.join(os.path.dirname(__file__), '..','..','data','raw')
 os.makedirs(RAW_DIR, exist_ok=True)
 
-def get_sp500_tickers():
-    """Fetch the S&P 500 tickers from Wikipedia."""
-    url = 'https://en.wikipedia.org/wiki/List_of_S%26P_500_companies'
+def get_sp100_tickers():
+    """Fetch the S&P 100 tickers from Wikipedia."""
+    url = 'https://en.wikipedia.org/wiki/S%26P_100'
     tables = pd.read_html(url)
-    sp500_df = tables[0]
-    return sp500_df['Symbol'].tolist()
+    sp100_df = tables[2]
+    return sp100_df['Symbol'].tolist()
 
 def fetch_and_save_data(tickers,start,end):
     """Fetch historical stock data for the given tickers and save to CSV."""
@@ -26,5 +26,5 @@ def fetch_and_save_data(tickers,start,end):
         print(f"Saved data for {ticker} to {RAW_DIR}/{ticker}.csv")
 
 if __name__ == "__main__":
-    tickers = get_sp500_tickers() + ['BTC-USD', 'ETH-USD', 'BNB-USD', 'XRP-USD']
+    tickers = get_sp100_tickers() + ['BTC-USD', 'ETH-USD', 'BNB-USD', 'XRP-USD']
     fetch_and_save_data(tickers, start='2015-01-01', end=datetime.now().strftime('%Y-%m-%d'))

@@ -1,0 +1,125 @@
+"""
+Train an XGBoost classifier on big-move labels, then fit a shallow surrogate
+DecisionTreeRegressor for interpretability.  Performs one expanding
+walk-forward window per symbol (3 yrs train, 1 yr test).
+Outputs  ➜  data/strategies/{symbol}_xgb.json
+"""
+
+import os, json, warnings, joblib
+import numpy as np, pandas as pd
+from datetime import datetime
+from sklearn.model_selection import TimeSeriesSplit, RandomizedSearchCV
+from sklearn.tree import DecisionTreeRegressor, export_text
+from sklearn.metrics import roc_auc_score
+from xgboost import XGBClassifier
+
+from target import build_bigmove_target
+import config as C
+
+BASE   = os.path.dirname(__file__) + "/../.."
+FEAT   = f"{BASE}/data/features"
+PROC   = f"{BASE}/data/processed"
+STRAT  = f"{BASE}/data/strategies"
+os.makedirs(STRAT, exist_ok=True)
+warnings.filterwarnings("ignore")
+
+# ── hyper-param search space
+PARAMS = {
+    "n_estimators":  [300, 400, 500],
+    "max_depth":     [3, 4, 5],
+    "learning_rate": [0.02, 0.05, 0.1],
+    "subsample":     [0.7, 0.8, 1.0],
+    "colsample_bytree":[0.7, 0.8, 1.0],
+}
+
+def load_xy(sym):
+    X = pd.read_csv(f"{FEAT}/{sym}.csv", index_col=0, parse_dates=True)
+    close = pd.read_csv(f"{PROC}/{sym}.csv", index_col=0, parse_dates=True)["Close"]
+
+    y = build_bigmove_target(
+            close,
+            hold_days=C.HOLD_DAYS,
+            pos_thres=C.RET_TH_HIGH,
+            neg_thres=C.RET_TH_LOW
+        ).reindex(X.index)
+
+    y = y.dropna().astype(int).replace(-1, 0)
+    mask = y.index
+    return X.loc[mask], y
+
+def build_windows(idx, train_years=3, test_years=1):
+    years = sorted({d.year for d in idx})
+    wins  = []
+    for i in range(train_years, len(years)-test_years+1):
+        t0 = pd.Timestamp(f"{years[0]}-01-01")
+        t1 = pd.Timestamp(f"{years[i-1]}-12-31")
+        v0 = pd.Timestamp(f"{years[i]}-01-01")
+        v1 = pd.Timestamp(f"{years[i+test_years-1]}-12-31")
+        if v1 in idx: wins.append((t0,t1,v0,v1))
+    return wins
+
+def process_symbol(sym):
+    X, y = load_xy(sym)
+    if len(X) < 500:                       
+        print(f"× {sym}: too little data")
+        return
+    windows = build_windows(X.index)
+    out_json = []
+    for (t0,t1,v0,v1) in windows:
+        mask_tr = (X.index>=t0)&(X.index<=t1)
+        mask_va = (X.index>=v0)&(X.index<=v1)
+        X_tr,y_tr = X.loc[mask_tr], y.loc[mask_tr]
+        X_va,y_va = X.loc[mask_va], y.loc[mask_va]
+        if len(X_va) < 60: continue
+
+        base = XGBClassifier(
+            objective="binary:logistic",
+            eval_metric="logloss",
+            random_state=42,
+            n_jobs=-1
+        )
+        search = RandomizedSearchCV(
+            base, PARAMS, n_iter=30,
+            scoring='roc_auc', cv=TimeSeriesSplit(4),
+            verbose=0, n_jobs=-1)
+        search.fit(X_tr, y_tr)
+        mdl = search.best_estimator_
+
+        proba_va = mdl.predict_proba(X_va)[:,1]
+        auc = roc_auc_score(y_va, proba_va)
+
+        # ── surrogate tree on training predictions
+        sur = DecisionTreeRegressor(max_depth=3, random_state=42)
+        sur.fit(X_tr, mdl.predict_proba(X_tr)[:,1])
+        rules_txt = export_text(sur, feature_names=list(X.columns))
+
+        # store artefacts
+        entry = {
+          "symbol": sym,
+          "window": f"{t0.date()}/{v1.date()}",
+          "auc": round(auc,4),
+          "params": search.best_params_,
+          "prob_thresholds": [C.PROB_LONG, C.PROB_FLAT],
+          "surrogate_rules": rules_txt,
+          "timestamp": datetime.utcnow().isoformat()+"Z"
+        }
+        out_json.append(entry)
+
+
+        mdl_file = f"{STRAT}/{sym}_{v1.year}_xgb.pkl"
+        joblib.dump(mdl, mdl_file)
+
+    if out_json:
+        with open(f"{STRAT}/{sym}_xgb.json","w") as f:
+            json.dump(out_json, f, indent=2)
+        print(f"√ {sym}: {len(out_json)} windows saved")
+    else:
+        print(f"× {sym}: no valid windows")
+
+def run_all():
+    syms = [f[:-4] for f in os.listdir(FEAT) if f.endswith(".csv")]
+    for s in syms:
+        process_symbol(s)
+
+if __name__ == "__main__":
+    run_all()
