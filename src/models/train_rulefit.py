@@ -8,6 +8,7 @@ from multiprocessing import Pool, cpu_count
 from functools import partial
 import time
 import threading
+import argparse
 
 from imodels import RuleFitClassifier        
 
@@ -18,6 +19,10 @@ STRAT_DIR = f"{BASE}/data/strategies"
 os.makedirs(STRAT_DIR, exist_ok=True)
 warnings.filterwarnings("ignore")
 
+# Symbol set filtering
+def _symbol_set(filter_syms):
+    all_syms = [f[:-4] for f in os.listdir(FEAT_DIR) if f.endswith(".csv")]
+    return [s for s in all_syms if (not filter_syms) or (s in filter_syms)]
 
 def build_target(close, hold=1):
     fwd_ret = close.shift(-hold) / close - 1
@@ -141,9 +146,9 @@ def train_single_symbol_wrapper(sym):
     """Wrapper for multiprocessing"""
     return train_rulefit_for_symbol(sym)
 
-def run_all_parallel():
-    syms = [f[:-4] for f in os.listdir(FEAT_DIR) if f.endswith(".csv")]
-    
+def run_all_parallel(symbols=None):
+    syms = _symbol_set(symbols)  # Get all symbols in the feature directory
+
     n_cores = max(1, min(4, int(cpu_count() * 0.5)))  # Max 4 cores, 50% usage
     print(f"Using {n_cores} cores for parallel processing...")
     
@@ -171,9 +176,11 @@ def run_all_sequential():
     return results
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Train RuleFit for a symbol subset")
+    parser.add_argument("--syms", nargs="+", help="Subset of tickers")
+    args = parser.parse_args()
     print("Starting RuleFit training...")
-    
-    run_all_parallel()
+    run_all_parallel(args.syms)
     
     # Use sequential processing
    # run_all_sequential()

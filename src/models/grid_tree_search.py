@@ -5,6 +5,7 @@ from datetime import datetime
 from sklearn.tree    import DecisionTreeClassifier, export_text
 from sklearn.metrics import accuracy_score
 from sklearn.model_selection import TimeSeriesSplit
+import argparse
 
 BASE     = os.path.dirname(__file__) + "/../.."
 FEAT_DIR = f"{BASE}/data/features"
@@ -12,6 +13,10 @@ PROC_DIR = f"{BASE}/data/processed"
 STRATDIR = f"{BASE}/data/strategies"
 os.makedirs(STRATDIR, exist_ok=True)
 warnings.filterwarnings("ignore")
+
+def _symbol_set(filter_syms):
+    all_syms = [f[:-4] for f in os.listdir(FEAT_DIR) if f.endswith(".csv")]
+    return [s for s in all_syms if (not filter_syms) or (s in filter_syms)]
 
 PARAM_GRID = {
     "max_depth":       [3, 4, 5, 6],
@@ -89,9 +94,8 @@ def train_final_tree(sym, params):
         json.dump(entry, f, indent=2)
     print(f"√ {sym}  cv_acc={best_acc:.4f}  saved→{out}")
 
-def run_all():
-    syms = [f[:-4] for f in os.listdir(FEAT_DIR) if f.endswith(".csv")]
-    for s in syms:
+def run_all(symbols=None):
+    for s in _symbol_set(symbols):
         try:
             params, cv = best_tree_for_symbol(s)
             train_final_tree(s, params)
@@ -99,4 +103,7 @@ def run_all():
             print(f"× {s}: {e}")
 
 if __name__ == "__main__":
-    run_all()
+    parser = argparse.ArgumentParser(description="Grid-search DT for subset")
+    parser.add_argument("--syms", nargs="+")
+    args  = parser.parse_args()
+    run_all(args.syms)

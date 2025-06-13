@@ -1,6 +1,7 @@
 import os
 import pandas as pd
 import ta
+import argparse
 
 # Paths
 PROC_DIR    = os.path.join(os.path.dirname(__file__), '..', '..', 'data', 'processed')
@@ -52,16 +53,24 @@ def compute_features(df):
     # Drop initial NaNs
     return feat.dropna()
 
-def run():
-    for fname in os.listdir(PROC_DIR):
-        if not fname.endswith('.csv'): 
-            continue
-        sym = fname.replace('.csv','')
-        df  = pd.read_csv(os.path.join(PROC_DIR, fname), index_col=0, parse_dates=True)
+def run(symbols=None):
+    files = [f for f in os.listdir(PROC_DIR) if f.endswith(".csv")]
+    if symbols:
+        files = [f"{s}.csv" for s in symbols if f"{s}.csv" in files]
+
+    for fname in files:
+        sym = fname[:-4]
+        df  = pd.read_csv(os.path.join(PROC_DIR, fname),
+                          index_col=0, parse_dates=True)
         feats = compute_features(df)
-        out_path = os.path.join(FEATURE_DIR, f"{sym}.csv")
-        feats.to_csv(out_path)
+        feats.to_csv(os.path.join(FEATURE_DIR, f"{sym}.csv"))
         print(f"→ Features for {sym}: {feats.shape[0]} rows, {feats.shape[1]} cols")
 
 if __name__ == "__main__":
-    run()
+    import argparse
+    parser = argparse.ArgumentParser(
+        description="Compute TA features for selected symbols")
+    parser.add_argument("--syms", nargs="+",
+                        help="e.g. --syms MCD TMO COP PFE")
+    args = parser.parse_args()
+    run(args.syms)

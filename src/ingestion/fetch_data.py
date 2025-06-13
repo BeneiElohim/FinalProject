@@ -2,6 +2,7 @@ import os, certifi
 from datetime import datetime
 import pandas as pd
 import yfinance as yf
+import argparse
 
 
 os.environ['REQUESTS_CA_BUNDLE']=certifi.where()
@@ -28,3 +29,17 @@ def fetch_and_save_data(tickers,start,end):
 if __name__ == "__main__":
     tickers = get_sp100_tickers() + ['BTC-USD', 'ETH-USD', 'BNB-USD', 'XRP-USD']
     fetch_and_save_data(tickers, start='2015-01-01', end=datetime.now().strftime('%Y-%m-%d'))
+    parser = argparse.ArgumentParser(
+        description="Download OHLCV for a custom list of tickers")
+    parser.add_argument("--tickers", nargs="+",
+                        help="Space-separated tickers, e.g. --tickers MCD TMO COP PFE")
+    parser.add_argument("--start", default="2015-01-01")
+    parser.add_argument("--end",   default=datetime.now().strftime('%Y-%m-%d'))
+    args = parser.parse_args()
+
+    if args.tickers:
+        tickers = args.tickers
+    else:
+        tickers = get_sp100_tickers() + ['BTC-USD', 'ETH-USD', 'BNB-USD', 'XRP-USD']
+
+    fetch_and_save_data(tickers, start=args.start, end=args.end)

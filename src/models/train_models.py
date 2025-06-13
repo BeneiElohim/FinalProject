@@ -7,6 +7,13 @@ from sklearn.tree import DecisionTreeClassifier, export_text
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
 import sys
+import argparse
+
+
+def _symbol_set(filter_syms):
+    files = [f for f in os.listdir(FEATURE_DIR) if f.endswith(".csv")]
+    all_syms = [f[:-4] for f in files]
+    return [s for s in all_syms if (not filter_syms) or (s in filter_syms)]
 
 # TODO: Add walk-forward validation and hyperparameter tuning
 def build_walkforward_windows(index, min_train_years=3, val_years=1):
@@ -131,12 +138,17 @@ def process_symbol(symbol: str,
     print(f"→ Saved {symbol}.json ({len(existing)} total entries)")
 
 # Run for all symbols in the features directory
-def run_all(test_size: float = 0.2, mode: str = "holdout"):
-    symbols = [f[:-4] for f in os.listdir(FEATURE_DIR) if f.endswith('.csv')]
-    for sym in symbols:
+def run_all(test_size: float = 0.2, mode: str = "holdout", symbols=None):
+    for sym in _symbol_set(symbols):
         process_symbol(sym, test_size=test_size, mode=mode)
 
 
 if __name__ == "__main__":
-    mode_arg = sys.argv[1] if len(sys.argv) > 1 else "holdout"
-    run_all(mode=mode_arg)
+    import argparse
+    parser = argparse.ArgumentParser(description="Train baseline DT per symbol")
+    parser.add_argument("--mode", choices=["holdout", "walk"], default="holdout")
+    parser.add_argument("--syms", nargs="+", help="Optional subset of tickers")
+    parser.add_argument("--test_size", type=float, default=0.2)
+    args = parser.parse_args()
+
+    run_all(test_size=args.test_size, mode=args.mode, symbols=args.syms)

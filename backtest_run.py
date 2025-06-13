@@ -3,11 +3,13 @@ import pandas as pd
 import vectorbt as vbt
 import joblib
 import src.models.config as C
+import argparse, textwrap
 
 BASE = os.path.dirname(__file__)
 RAW   = f"{BASE}/data/processed"     
 FEAT  = f"{BASE}/data/features"      
 RULES = f"{BASE}/data/strategies"
+
 
 
 def latest_xgb_model(sym):
@@ -157,14 +159,22 @@ def backtest(sym):
     return stats.rename(sym)
 
 if __name__ == "__main__":
-    with open("candidates.txt") as f:
-        syms = [s.strip() for s in f if s.strip()]
 
-    results = pd.concat([backtest(s) for s in syms], axis=1).T
-    print("\n=== BACKTEST RESULTS ===\n")
+    parser = argparse.ArgumentParser(
+        description="Compare RuleFit & XGB stats for selected tickers",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=textwrap.dedent("""\
+            examples:
+              python backtest_run.py --syms MCD TMO COP PFE
+        """))
+    parser.add_argument("--syms", nargs="+", required=True,
+                        help="Tickers to evaluate")
+    args = parser.parse_args()
+
+    results = pd.concat([backtest(s) for s in args.syms], axis=1).T
+    print("\n=== RULEFIT BACKTEST RESULTS ===\n")
     print(results.round(2))
 
-    SYMS_XGB = ["TMO", "MCD"]          # or read from a file
-    res_xgb = pd.concat([backtest_xgb(s) for s in SYMS_XGB], axis=1).T
+    res_xgb = pd.concat([backtest_xgb(s) for s in args.syms], axis=1).T
     print("\n=== XGB BACKTEST RESULTS ===\n")
     print(res_xgb.round(2))

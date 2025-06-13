@@ -15,6 +15,7 @@ from xgboost import XGBClassifier
 
 from target import build_bigmove_target
 import config as C
+import argparse
 
 BASE   = os.path.dirname(__file__) + "/../.."
 FEAT   = f"{BASE}/data/features"
@@ -22,6 +23,10 @@ PROC   = f"{BASE}/data/processed"
 STRAT  = f"{BASE}/data/strategies"
 os.makedirs(STRAT, exist_ok=True)
 warnings.filterwarnings("ignore")
+
+def _symbol_set(filter_syms):
+    all_syms = [f[:-4] for f in os.listdir(FEAT) if f.endswith(".csv")]
+    return [s for s in all_syms if (not filter_syms) or (s in filter_syms)]
 
 # ── hyper-param search space
 PARAMS = {
@@ -116,10 +121,13 @@ def process_symbol(sym):
     else:
         print(f"× {sym}: no valid windows")
 
-def run_all():
-    syms = [f[:-4] for f in os.listdir(FEAT) if f.endswith(".csv")]
-    for s in syms:
+def run_all(symbols=None):
+    for s in _symbol_set(symbols):
         process_symbol(s)
 
 if __name__ == "__main__":
-    run_all()
+
+    parser = argparse.ArgumentParser(description="Train XGB+surrogate for subset")
+    parser.add_argument("--syms", nargs="+")
+    args = parser.parse_args()
+    run_all(args.syms)
