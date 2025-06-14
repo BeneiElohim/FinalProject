@@ -27,8 +27,6 @@ def fetch_and_save_data(tickers,start,end):
         print(f"Saved data for {ticker} to {RAW_DIR}/{ticker}.csv")
 
 if __name__ == "__main__":
-    tickers = get_sp100_tickers() + ['BTC-USD', 'ETH-USD', 'BNB-USD', 'XRP-USD']
-    fetch_and_save_data(tickers, start='2015-01-01', end=datetime.now().strftime('%Y-%m-%d'))
     parser = argparse.ArgumentParser(
         description="Download OHLCV for a custom list of tickers")
     parser.add_argument("--tickers", nargs="+",
@@ -36,10 +34,8 @@ if __name__ == "__main__":
     parser.add_argument("--start", default="2015-01-01")
     parser.add_argument("--end",   default=datetime.now().strftime('%Y-%m-%d'))
     args = parser.parse_args()
-
     if args.tickers:
         tickers = args.tickers
     else:
         tickers = get_sp100_tickers() + ['BTC-USD', 'ETH-USD', 'BNB-USD', 'XRP-USD']
-
-    fetch_and_save_data(tickers, start=args.start, end=args.end)
+    fetch_and_save_data(tickers, start='2015-01-01', end=datetime.now().strftime('%Y-%m-%d'))

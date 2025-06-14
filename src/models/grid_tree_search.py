@@ -6,6 +6,7 @@ from sklearn.tree    import DecisionTreeClassifier, export_text
 from sklearn.metrics import accuracy_score
 from sklearn.model_selection import TimeSeriesSplit
 import argparse
+import joblib
 
 BASE     = os.path.dirname(__file__) + "/../.."
 FEAT_DIR = f"{BASE}/data/features"
@@ -57,7 +58,10 @@ def best_tree_for_symbol(sym):
                                             min_samples_leaf=leaf)
     return best_params, best
 
-def train_final_tree(sym, params):
+def train_final_tree(sym, params, best_acc=None):
+    if best_acc == -np.inf or params is None:
+        print(f"× {sym}: label has no class variation – skipped")
+        return
     X, y = load_xy(sym)
     split = int(len(X) * 0.8)
     X_train, X_val = X.iloc[:split], X.iloc[split:]
@@ -65,26 +69,33 @@ def train_final_tree(sym, params):
 
     clf = DecisionTreeClassifier(**params, random_state=42)
     clf.fit(X_train, y_train)
+    pkl_path = f"{STRATDIR}/{sym}_grid.pkl"
+    joblib.dump(clf, pkl_path)
 
     proba_val = clf.predict_proba(X_val)[:, 1]       # prob of class 1
 
     # choose threshold set that maximises accuracy after abstaining
-    best_acc, best_thr = -np.inf, None
+    gate_acc, best_thr = -np.inf, None
     for hi, lo in PROB_THRESHOLDS:
         preds = np.where(proba_val >= hi, 1,
-                 np.where(proba_val <= lo, 0, -1))   # -1 = “no-trade”
+                np.where(proba_val <= lo, 0, -1))
         mask  = preds != -1
         if mask.any():
             acc = accuracy_score(y_val[mask], preds[mask])
-            if acc > best_acc:
-                best_acc, best_thr = acc, (hi, lo)
+            if acc > gate_acc:
+                gate_acc, best_thr = acc, (hi, lo)
+
+# if no gating worked, just use vanilla accuracy
+    if gate_acc == -np.inf:
+        gate_acc = accuracy_score(y_val, clf.predict(X_val))
+        best_thr = (None, None)
 
     rules_txt = export_text(clf, feature_names=list(X.columns))
     entry = {
         "symbol": sym,
         "model_type": "DecisionTree-Grid",
         "params": params,
-        "cv_accuracy": round(best_acc, 4),
+        "cv_accuracy": round(gate_acc, 4),
         "prob_thresholds": best_thr,
         "rules": rules_txt,
         "timestamp": datetime.utcnow().isoformat() + "Z"
@@ -98,7 +109,7 @@ def run_all(symbols=None):
     for s in _symbol_set(symbols):
         try:
             params, cv = best_tree_for_symbol(s)
-            train_final_tree(s, params)
+            train_final_tree(s, params,cv)
         except Exception as e:
             print(f"× {s}: {e}")
 

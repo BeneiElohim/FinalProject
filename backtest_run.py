@@ -9,8 +9,58 @@ BASE = os.path.dirname(__file__)
 RAW   = f"{BASE}/data/processed"     
 FEAT  = f"{BASE}/data/features"      
 RULES = f"{BASE}/data/strategies"
+STRAT = f"{BASE}/data/strategies"  
 
 
+def _load_price(sym):
+    return pd.read_csv(f"{RAW}/{sym}.csv", index_col=0, parse_dates=True)["Close"]
+
+def _load_feats(sym):
+    return pd.read_csv(f"{FEAT}/{sym}.csv", index_col=0, parse_dates=True)
+
+def _pf_stats(pf):
+    want = ["Total Return [%]", "CAGR", "Sharpe Ratio", "Max Drawdown [%]"]
+    s = pf.stats()
+    cols = [c for c in want if c in s.index]           
+    if not cols:                                      
+        cols = list(s.index[:4])
+    return s[cols]
+
+def _run_port(price, entries, exits):
+    pf = vbt.Portfolio.from_signals(
+        price, entries, exits,
+        fees=C.FEE_BPS / 10_000,
+        init_cash=C.INIT_CASH,
+        freq="D")
+    return _pf_stats(pf)
+
+def bt_dt(sym):
+    mdl = joblib.load(f"{STRAT}/{sym}_dt.pkl")
+    feats  = _load_feats(sym) ; price = _load_price(sym).reindex(feats.index).ffill()
+    prob   = pd.Series(mdl.predict_proba(feats)[:,1], index=feats.index)
+    return _run_port(price, prob >= 0.50, prob < 0.50).rename(sym)
+
+def bt_grid(sym):
+    mdl  = joblib.load(f"{STRAT}/{sym}_grid.pkl")
+    with open(f"{STRAT}/{sym}_grid.json") as f:
+        hi, lo = json.load(f)["prob_thresholds"] or (0.70, 0.30)
+    feats  = _load_feats(sym) ; price = _load_price(sym).reindex(feats.index).ffill()
+    prob   = pd.Series(mdl.predict_proba(feats)[:,1], index=feats.index)
+    return _run_port(price, prob >= hi, prob <= lo).rename(sym)
+
+def bt_rulefit(sym):
+    feats  = _load_feats(sym) ; price = _load_price(sym).reindex(feats.index).ffill()
+    with open(f"{STRAT}/{sym}_rulefit.json") as f:
+        rule = json.load(f)["top_rules"][0]["rule"]
+    sig = pd.eval(rule, local_dict=feats).fillna(0).astype(bool)
+    return _run_port(price, sig, ~sig).rename(sym)
+
+def bt_xgb(sym):
+    pkl = max([f for f in os.listdir(STRAT) if f.startswith(f"{sym}_") and f.endswith("_xgb.pkl")])
+    mdl  = joblib.load(f"{STRAT}/{pkl}")
+    feats  = _load_feats(sym) ; price = _load_price(sym).reindex(feats.index).ffill()
+    prob   = pd.Series(mdl.predict_proba(feats)[:,1], index=feats.index)
+    return _run_port(price, prob >= C.PROB_LONG, prob <= C.PROB_FLAT).rename(sym)
 
 def latest_xgb_model(sym):
     """
@@ -158,23 +208,52 @@ def backtest(sym):
     stats = all_stats[desired_stats]
     return stats.rename(sym)
 
+def print_rules(sym, model_tag, max_lines=12):
+    """Pretty-print rules for dt | grid | rulefit"""
+    if model_tag == "dt":
+        path = f"{STRAT}/{sym}.json"
+        meta = json.load(open(path))[-1] if isinstance(json.load(open(path)), list) else json.load(open(path))
+        text = meta["rules"]
+        head = "\n".join(text.splitlines()[:max_lines])
+        print(f"\n{sym} – Decision Tree rules (first {max_lines} lines):\n{head}")
+    elif model_tag == "grid":
+        meta = json.load(open(f"{STRAT}/{sym}_grid.json"))
+        head = "\n".join(meta["rules"].splitlines()[:max_lines])
+        print(f"\n{sym} – Grid-DT rules (first {max_lines} lines):\n{head}")
+    elif model_tag == "rulefit":
+        meta = json.load(open(f"{STRAT}/{sym}_rulefit.json"))
+        print(f"\n{sym} – RuleFit top-rules (coef | rule):")
+        for r in meta["top_rules"]:
+            print(f"{r['coef']:>7.4f} │ {r['rule']}")
+            
 if __name__ == "__main__":
-
     parser = argparse.ArgumentParser(
-        description="Compare RuleFit & XGB stats for selected tickers",
+        description="Back-test DT, Grid-DT, RuleFit and XGB engines",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=textwrap.dedent("""\
-            examples:
+        epilog=textwrap.dedent("""
+            example:
               python backtest_run.py --syms MCD TMO COP PFE
-        """))
-    parser.add_argument("--syms", nargs="+", required=True,
-                        help="Tickers to evaluate")
+              python backtest_run.py --syms MCD TMO --models dt rulefit
+        """)
+    )
+    parser.add_argument("--syms",   nargs="+", required=True)
+    parser.add_argument("--models", nargs="+",
+                        choices=["dt", "grid", "rulefit", "xgb"],
+                        default=["dt", "grid", "rulefit", "xgb"])
     args = parser.parse_args()
 
-    results = pd.concat([backtest(s) for s in args.syms], axis=1).T
-    print("\n=== RULEFIT BACKTEST RESULTS ===\n")
-    print(results.round(2))
+    engines = {
+        "dt": bt_dt,
+        "grid": bt_grid,
+        "rulefit": bt_rulefit,
+        "xgb": bt_xgb
+    }
 
-    res_xgb = pd.concat([backtest_xgb(s) for s in args.syms], axis=1).T
-    print("\n=== XGB BACKTEST RESULTS ===\n")
-    print(res_xgb.round(2))
+    for tag in args.models:
+        tbl = pd.concat([engines[tag](s) for s in args.syms], axis=1).T.round(2)
+        print(f"\n=== {tag.upper()} BACK-TEST RESULTS ===\n")
+        print(tbl)
+
+        if tag in ("dt", "grid", "rulefit"):
+            for sym in args.syms:
+                print_rules(sym, tag)

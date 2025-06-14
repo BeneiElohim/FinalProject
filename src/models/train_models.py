@@ -6,7 +6,7 @@ import numpy as np
 from sklearn.tree import DecisionTreeClassifier, export_text
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
-import sys
+import joblib
 import argparse
 
 
@@ -101,6 +101,9 @@ def process_symbol(symbol: str,
         rf.fit(X_tr, y_tr)
         top_rf = sorted(zip(X_tr.columns, rf.feature_importances_),
                         key=lambda x: x[1], reverse=True)[:10]
+        
+        pkl_path = os.path.join(STRAT_DIR, f"{symbol}_dt.pkl")
+        joblib.dump(clf, pkl_path)
 
         existing.append({
             'symbol': symbol,
