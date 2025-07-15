@@ -7,6 +7,8 @@ from sklearn.metrics import accuracy_score
 from sklearn.model_selection import TimeSeriesSplit
 import argparse
 import joblib
+from utils.windows import build_walkforward_windows
+from calibrate import calibrate_prefit
 
 BASE     = os.path.dirname(__file__) + "/../.."
 FEAT_DIR = f"{BASE}/data/features"
@@ -36,14 +38,18 @@ def load_xy(sym):
     X = X.loc[y.index]
     return X, y
 
-def time_series_cv_score(model, X, y, splits=4):
-    tscv = TimeSeriesSplit(n_splits=splits)
+def time_series_cv_score(model, X, y):
+    """Walk-forward score = mean validation accuracy across windows."""
     scores = []
-    for train_idx, val_idx in tscv.split(X):
-        model.fit(X.iloc[train_idx], y.iloc[train_idx])
-        y_pred = model.predict(X.iloc[val_idx])
-        scores.append(accuracy_score(y.iloc[val_idx], y_pred))
-    return np.mean(scores)
+    for t0, t1, v0, v1 in build_walkforward_windows(X.index):
+        tr_mask = (X.index >= t0) & (X.index <= t1)
+        va_mask = (X.index >= v0) & (X.index <= v1)
+        if va_mask.sum() < 30:            # skip tiny validation sets
+            continue
+        model.fit(X.loc[tr_mask], y.loc[tr_mask])
+        y_pred = model.predict(X.loc[va_mask])
+        scores.append(accuracy_score(y.loc[va_mask], y_pred))
+    return np.mean(scores) if scores else -np.inf
 
 def best_tree_for_symbol(sym):
     X, y = load_xy(sym)

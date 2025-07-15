@@ -1,17 +1,18 @@
-import os, json, warnings
-import pandas as pd
+import os, json, warnings, time
 from datetime import datetime
-from sklearn.metrics import accuracy_score, precision_recall_fscore_support
-from sklearn.model_selection import train_test_split, TimeSeriesSplit
-from tqdm import tqdm
 from multiprocessing import Pool, cpu_count
-from functools import partial
-import time
-import threading
-import argparse
+from typing import List, Dict
 
-from imodels import RuleFitClassifier        
+import pandas as pd
+from sklearn.metrics import accuracy_score, precision_recall_fscore_support
+from imodels import RuleFitClassifier
+import joblib
+from tqdm import tqdm
 
+from utils.windows import build_walkforward_windows
+from calibrate import calibrate_prefit
+
+# --------------------------------------------------------------------------- #
 BASE      = os.path.dirname(__file__) + "/../.."
 FEAT_DIR  = f"{BASE}/data/features"
 PROC_DIR  = f"{BASE}/data/processed"
@@ -19,168 +20,109 @@ STRAT_DIR = f"{BASE}/data/strategies"
 os.makedirs(STRAT_DIR, exist_ok=True)
 warnings.filterwarnings("ignore")
 
-# Symbol set filtering
-def _symbol_set(filter_syms):
+def _symbol_set(filter_syms=None):
     all_syms = [f[:-4] for f in os.listdir(FEAT_DIR) if f.endswith(".csv")]
     return [s for s in all_syms if (not filter_syms) or (s in filter_syms)]
 
-def build_target(close, hold=1):
-    fwd_ret = close.shift(-hold) / close - 1
-    return (fwd_ret > 0).astype(int)
+def build_target(close: pd.Series, hold: int = 1) -> pd.Series:
+    fwd = close.shift(-hold) / close - 1
+    return (fwd > 0).astype(int)
 
-def load_xy(sym):
+def load_xy(sym: str):
     X = pd.read_csv(f"{FEAT_DIR}/{sym}.csv", index_col=0, parse_dates=True)
-    close = pd.read_csv(f"{PROC_DIR}/{sym}.csv", index_col=0, parse_dates=True)["Close"]
+    close = pd.read_csv(f"{PROC_DIR}/{sym}.csv",
+                        index_col=0, parse_dates=True)["Close"]
     y = build_target(close).reindex(X.index).dropna()
-    X = X.loc[y.index]
-    return X, y
+    return X.loc[y.index], y
 
+# --------------------------------------------------------------------------- #
+def train_rulefit_for_symbol(sym: str, thresh: float = 0.5) -> str:
+    X, y = load_xy(sym)
+    if len(X) < 100 or y.nunique() < 2:
+        return f"× {sym}: not enough data"
 
-def train_rulefit_for_symbol(sym, thresh=0.5):
-    try:
-        start_time = time.time()
-        
-        X, y = load_xy(sym)
-        if len(X) < 100:
-            return f"× {sym}: not enough data for training (got {len(X)} rows)"
-        
-        # Subsample large datasets for speed
-        if len(X) > 3000:  # Reduced threshold for even faster processing
-            sample_size = 3000
-            idx = X.sample(n=sample_size, random_state=42).index
-            X, y = X.loc[idx], y.loc[idx]
-        
-        split = int(len(X)*0.8)
-        X_train, X_val = X.iloc[:split], X.iloc[split:]
-        y_train, y_val = y.iloc[:split], y.iloc[split:]
+    windows = build_walkforward_windows(X.index, 3, 1)
+    if not windows:
+        return f"× {sym}: no windows"
 
+    entries: List[Dict] = []
+    for t0, t1, v0, v1 in windows:
+        tr = (X.index >= t0) & (X.index <= t1)
+        va = (X.index >= v0) & (X.index <= v1)
+        if va.sum() < 30:     # tiny window guard
+            continue
+
+        X_tr, y_tr = X.loc[tr], y.loc[tr]
+        X_va, y_va = X.loc[va], y.loc[va]
 
         rf_clf = RuleFitClassifier(
-            tree_size      = 3,
-            sample_fract   = 0.5,      
-            max_rules      = 500,       
-            n_estimators   = 50,       
-            memory_par     = 0.01,
-            random_state   = 42,
-            include_linear = False,
+            tree_size=3,
+            sample_fract=0.5,
+            max_rules=500,
+            n_estimators=50,
+            memory_par=0.01,
+            random_state=42,
+            include_linear=False,
         )
-        rf_clf.fit(X_train.values, y_train.values, feature_names=list(X.columns))
-        # Predict probabilities on validation
-        prob_val = rf_clf.predict_proba(X_val.values)[:,1]
-        y_pred   = (prob_val >= thresh).astype(int)
-        acc      = accuracy_score(y_val, y_pred)
-        prec, rec, f1, _ = precision_recall_fscore_support(y_val, y_pred, average='binary')
+        rf_clf.fit(X_tr.values, y_tr.values, feature_names=list(X.columns))
 
-        # Extract learned rules and coefficients
-        rules = rf_clf.rules_
-        all_coefs = rf_clf.coef
-        
-        # Extract rule coefficients
-        if rf_clf.include_linear:
-            rule_coefs = all_coefs[len(X.columns):]
-        else:
-            rule_coefs = all_coefs
-        
-        # Ensure arrays have same length
-        min_len = min(len(rules), len(rule_coefs))
-        rules = rules[:min_len]
-        rule_coefs = rule_coefs[:min_len]
-        
-        # Create DataFrame for easier handling
-        rules_df = pd.DataFrame({
-            "rule": rules,
-            "coef": rule_coefs
-        })
-        
-        # Filter out zero coefficients and sort by absolute coefficient value
-        rules_df = rules_df[rules_df['coef'] != 0].copy()
-        if len(rules_df) > 0:
-            rules_df = rules_df.reindex(rules_df['coef'].abs().sort_values(ascending=False).index)
+        # ---- calibration --------------------------------------------------- #
+        cal_rf = calibrate_prefit(rf_clf, X_va.values, y_va.values,
+                                  method="isotonic")
+        prob_va = cal_rf.predict_proba(X_va.values)[:, 1]
+        y_pred  = (prob_va >= thresh).astype(int)
 
-        # Format top-N rules into plain text
-        TOP_N = min(5, len(rules_df))  
-        selected = rules_df.head(TOP_N)
-        rule_texts = []
-        
-        for _, r in selected.iterrows():
-            rule_texts.append({
-                "rule": str(r['rule']),
-                "coef": round(float(r['coef']), 5)
-            })
+        acc  = accuracy_score(y_va, y_pred)
+        prec, rec, f1, _ = precision_recall_fscore_support(
+            y_va, y_pred, average="binary", zero_division=0)
 
+        rules_df = pd.DataFrame({"rule": rf_clf.rules_, "coef": rf_clf.coef})
+        rules_df = rules_df[rules_df["coef"] != 0]
+        rules_df = rules_df.reindex(rules_df["coef"].abs()
+                                    .sort_values(ascending=False).index)
+        top_rules = [
+            {"rule": str(r), "coef": round(float(c), 5)}
+            for r, c in zip(rules_df["rule"][:5], rules_df["coef"][:5])
+        ] or [{"rule": "No significant rules", "coef": 0.0}]
 
-        if len(rule_texts) == 0:
-            rule_texts.append({
-                "rule": "No significant rules found",
-                "coef": 0.0
-            })
-
-
-        entry = {
+        entries.append({
             "symbol": sym,
             "model_type": "RuleFit",
-            "train_rows": len(X_train),
-            "val_rows":   len(X_val),
+            "window": f"{t0.date()}–{v1.date()}",
+            "train_rows": int(tr.sum()),
+            "val_rows":   int(va.sum()),
             "metrics": {
-                "accuracy": round(acc,4),
-                "precision":round(prec,4),
-                "recall":   round(rec,4),
-                "f1":       round(f1,4)
+                "accuracy":  round(acc, 4),
+                "precision": round(prec, 4),
+                "recall":    round(rec, 4),
+                "f1":        round(f1, 4)
             },
             "threshold": thresh,
             "total_rules": len(rules_df),
-            "top_rules": rule_texts,
-            "processing_time": round(time.time() - start_time, 2),
+            "top_rules":   top_rules,
             "timestamp": datetime.utcnow().isoformat() + "Z"
-        }
-        out = f"{STRAT_DIR}/{sym}_rulefit.json"
-        with open(out,"w") as f:
-            json.dump(entry, f, indent=2)
-        
-        return f"√ {sym}  acc={acc:.3f}  rules={len(rules_df)}  time={entry['processing_time']}s"
-        
-    except Exception as e:
-        return f"× {sym}: {str(e)[:100]}..."  # Truncate long error messages
+        })
 
-def train_single_symbol_wrapper(sym):
-    """Wrapper for multiprocessing"""
-    return train_rulefit_for_symbol(sym)
+    if not entries:
+        return f"× {sym}: every window skipped"
 
+    json.dump(entries, open(f"{STRAT_DIR}/{sym}_rulefit.json", "w"), indent=2)
+    joblib.dump(cal_rf, f"{STRAT_DIR}/{sym}_rulefit_cal.pkl")
+    return f"√ {sym}  windows={len(entries)}"
+
+# --------------------------------------------------------------------------- #
 def run_all_parallel(symbols=None):
-    syms = _symbol_set(symbols)  # Get all symbols in the feature directory
+    syms = _symbol_set(symbols)
+    n = max(1, min(4, int(cpu_count() * 0.5)))
+    with Pool(n) as pool:
+        for res in tqdm(pool.imap(train_rulefit_for_symbol, syms),
+                        total=len(syms), unit="sym"):
+            print(res)
 
-    n_cores = max(1, min(4, int(cpu_count() * 0.5)))  # Max 4 cores, 50% usage
-    print(f"Using {n_cores} cores for parallel processing...")
-    
-    with Pool(n_cores) as pool:
-        results = list(tqdm(
-            pool.imap(train_single_symbol_wrapper, syms),
-            total=len(syms),
-            desc="Training RuleFit models",
-            unit="symbol"
-        ))
-    
-    # Print results
-    for result in results:
-        print(result)
-
-def run_all_sequential():
-    """Fallback sequential version"""
-    syms = [f[:-4] for f in os.listdir(FEAT_DIR) if f.endswith(".csv")]
-    results = []
-    for s in tqdm(syms, desc="Training RuleFit models", unit="symbol"):
-        result = train_rulefit_for_symbol(s)
-        results.append(result)
-        print(result)  # Print immediately for progress tracking
-        
-    return results
-
+# --------------------------------------------------------------------------- #
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Train RuleFit for a symbol subset")
-    parser.add_argument("--syms", nargs="+", help="Subset of tickers")
-    args = parser.parse_args()
-    print("Starting RuleFit training...")
-    run_all_parallel(args.syms)
-    
-    # Use sequential processing
-   # run_all_sequential()
+    import argparse
+    p = argparse.ArgumentParser()
+    p.add_argument("--syms", nargs="+")
+    a = p.parse_args()
+    run_all_parallel(a.syms)
