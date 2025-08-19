@@ -1,0 +1,84 @@
+services:
+  # Backend API
+  backend:
+    build: .
+    container_name: signal-engine-backend
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data
+      - ./src:/app/src
+      - ./signal_engine:/app/signal_engine
+      - ./api:/app/api
+      - ./candidates.txt:/app/candidates.txt
+    environment:
+      - PYTHONUNBUFFERED=1
+      - DATABASE_URL=sqlite:////app/data/strategies.db
+      - OLLAMA_URL=http://ollama:11434
+    command: uvicorn api.main:app --host 0.0.0.0 --port 8000 --reload
+    depends_on:
+      - db-migrate
+
+  # Frontend
+  frontend:
+    build: ./frontend
+    container_name: signal-engine-frontend
+    ports:
+      - "3000:80" # Map to nginx port 80
+    environment:
+      - VITE_API_URL=http://localhost:8000
+    depends_on:
+      - backend
+
+  # Ollama for LLM explanations
+  ollama:
+    image: ollama/ollama:latest
+    container_name: signal-engine-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    environment:
+      - OLLAMA_KEEP_ALIVE=24h
+    command: serve
+
+  # Ollama model puller
+  ollama-pull:
+    image: ollama/ollama:latest
+    container_name: signal-engine-ollama-pull
+    volumes:
+      - ollama_data:/root/.ollama
+    depends_on:
+      ollama:
+        condition: service_started
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        echo "Waiting for Ollama service to be ready..."
+        until ollama list; do
+          sleep 1
+        done
+        echo "Ollama is ready. Pulling model..."
+        ollama pull gemma:2b || echo "Model pull failed but continuing..."
+        echo "Ollama setup complete."
+    restart: on-failure
+
+  # Database migration service
+  db-migrate:
+    build: .
+    container_name: signal-engine-db-migrate
+    volumes:
+      - ./data:/app/data
+      - ./src:/app/src
+      - ./signal_engine:/app/signal_engine
+    environment:
+      - PYTHONPATH=/app
+      - DATABASE_URL=sqlite:////app/data/strategies.db
+    command: ["python", "src/models/db.py", "init"]
+
+volumes:
+  ollama_data:
+
+networks:
+  default:
+    name: signal-engine-network

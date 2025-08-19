@@ -2,3 +2,5 @@ working_notes.txt
 venv/
 data/
 src/models/__pycache__/
+__pycache__
+api/__pycache__/

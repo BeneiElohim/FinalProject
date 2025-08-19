@@ -1,0 +1,36 @@
+[tool.poetry]
+name = "signal-engine"
+version = "0.1.0"
+description = "Rule-based multi-model trading engine"
+authors = ["İsmail Mert Tarihçi"]
+
+[tool.poetry.dependencies]
+python = "^3.10"
+numpy = "1.23.*"
+pandas = "1.5.*"
+yfinance = "^0.2"
+ta = "^0.10"
+scikit-learn = "^1.4"
+xgboost = "^2.0"
+imodels = "^2.0"
+deap = "^1.4"
+vectorbt = "^0.26"
+fastapi = "^0.111"
+uvicorn = "^0.29"
+tqdm = "^4.66"
+dill = "^0.3"
+rich = "^13.7"
+sqlalchemy = "^2.0.42"
+plotly = "<6"
+lxml = "^6.0.0"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.2"
+black = "^24.4"
+isort = "^5.13"
+ruff = "^0.4"
+pre-commit = "^3.7"
+
+[build-system]
+requires = ["poetry-core>=1.5.1", "setuptools>=61.0", "wheel"]
+build-backend = "poetry.core.masonry.api"
