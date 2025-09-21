@@ -18,6 +18,18 @@ def get_spy_data():
         _spy_data_cache = data
     return _spy_data_cache
 
+def _max_lookback(params: dict) -> int:
+    """Finds the longest lookback window from all feature parameters."""
+    wins = []
+    win_keys = [
+        "ret_windows", "sma_windows", "ema_windows", "roc_windows", "rsi_windows",
+        "atr_windows", "vol_windows", "bb_windows", "adx_windows",
+        "regime_windows", "stoch_windows", "cmf_windows", "vortex_windows"
+    ]
+    for k in win_keys:
+        wins.extend(params.get(k, []))
+    return max(wins) if wins else 0
+
 def compute_features(df: pd.DataFrame, params: dict) -> pd.DataFrame:
     """
     Computes a wide range of technical analysis features based on the
@@ -86,9 +98,12 @@ def compute_features(df: pd.DataFrame, params: dict) -> pd.DataFrame:
     for w in params.get("vortex_windows", []):
         vortex = ta.trend.VortexIndicator(high, low, close, window=w)
         feat[f'vortex_diff_{w}'] = vortex.vortex_indicator_diff()
-
-    # Clean up and return
     feat = feat.replace([np.inf, -np.inf], np.nan)
-    final_feat = feat.dropna(axis=0, how='any')
+
+    feat = feat.ffill()
     
+    warmup = _max_lookback(params)
+    
+    print(f"    Applying feature warm-up period of {warmup} days.")
+    final_feat = feat.iloc[warmup:].dropna(axis=0, how='all')
     return final_feat

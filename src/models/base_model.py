@@ -1,12 +1,10 @@
 from abc import ABC, abstractmethod
-from pathlib import Path
 from typing import Dict, Any, Tuple
 import pandas as pd
 import numpy as np
 from sqlalchemy.orm import Session
-from sklearn.model_selection import RandomizedSearchCV
+from sklearn.model_selection import RandomizedSearchCV, TimeSeriesSplit
 from sklearn.metrics import accuracy_score
-import json
 
 from src.utils.windows import build_walkforward_windows
 from src.models.calibrate import calibrate_prefit
@@ -14,6 +12,7 @@ from src.models.db import Strategy, Backtest, generate_strategy_id
 from src.models.backtest_utils import run_backtest
 from src.models.config import est_cost
 from src.models.parameter_grids import MODEL_PARAMS
+from signal_engine.utils import SEED
 
 MIN_TRADES_FOR_STRATEGY = 5
 
@@ -38,8 +37,8 @@ class BaseModel(ABC):
     def _extract_rules(self, model: Any, feature_names: list) -> Dict[str, Any]:
         pass
 
-    def run_pipeline(self, db: Session):
-        print(f"--- Running pipeline for {self.model_type.upper()} on {self.symbol} ---")
+    def run_pipeline(self, db: Session, strategic_params: dict):
+        print(f"--- Running pipeline for {self.model_type.upper()} on {self.symbol} with params {strategic_params} ---")
         if len(self.X) < 500 or self.y.nunique() < 2:
             print(f"  [SKIP] Insufficient data for {self.symbol}.")
             return
@@ -90,37 +89,52 @@ class BaseModel(ABC):
             return
 
         final_entries = all_oos_signals['entries']
-        final_exits = all_oos_signals['exits']
-        atr_col = next((col for col in self.X.columns if 'atr' in col), None)
+        final_exits   = all_oos_signals['exits'] & ~final_entries
+        
+        atr_col = next((col for col in self.X.columns if 'atr' in col.lower()), None)
         atr14 = self.X[atr_col] if atr_col else pd.Series(0.01, index=self.price.index)
         fees = est_cost(atr14, self.price)
         result = run_backtest(self.symbol, self.price, final_entries, final_exits, fees=fees, benchmark=self.price)
         metrics = result.get("metrics", {})
         num_trades = metrics.get('num_trades', 0)
+        
         print(f"  Backtest complete. Sharpe: {metrics.get('sharpe_ratio', 0):.2f}, Trades: {num_trades}")
         if num_trades < MIN_TRADES_FOR_STRATEGY:
             print(f"  [DISCARD] Strategy generated only {num_trades} trades (min is {MIN_TRADES_FOR_STRATEGY}). Not saving.")
             return
+            
         strategy_def = {
             "rules": latest_window_artifacts.get('rules', {}),
-            "hyperparameters": latest_window_artifacts.get('hyperparameters', {})
+            "hyperparameters": latest_window_artifacts.get('hyperparameters', {}),
+            "strategic_params": strategic_params
         }
+
         if 'hyperparameters' in strategy_def:
             strategy_def['hyperparameters'] = {k: str(v) for k, v in strategy_def['hyperparameters'].items()}
+            
         strategy_id = generate_strategy_id(self.symbol, self.model_type, **strategy_def)
+        
         existing_strat = db.query(Strategy).filter(Strategy.id == strategy_id).first()
         if existing_strat:
             db.delete(existing_strat)
             db.commit()
+
         strategy = Strategy(id=strategy_id, symbol=self.symbol, model_type=self.model_type, **strategy_def)
         db.add(strategy)
         db.commit()
+
+        oos_mask = final_entries | final_exits
+        oos_idx = self.price.index[oos_mask]
+        test_start_date = oos_idx.min() if not oos_idx.empty else self.price.index.min()
+        test_end_date = oos_idx.max() if not oos_idx.empty else self.price.index.max()
+
         backtest = Backtest(
             strategy_id=strategy.id, sharpe_ratio=metrics.get('sharpe_ratio'), max_drawdown=metrics.get('max_drawdown'),
             annual_return=metrics.get('annual_return'), win_rate=metrics.get('win_rate'),
             num_trades=metrics.get('num_trades'), metrics=metrics,
             equity_curve=result.get('equity_curve'), trade_log=result.get('trade_log'),
-            test_start=self.price.index.min(), test_end=self.price.index.max(),
+            test_start=test_start_date,
+            test_end=test_end_date,
         )
         db.add(backtest)
         db.commit()
@@ -130,11 +144,16 @@ class BaseModel(ABC):
         estimator, grid = self._get_estimator_and_grid()
         
         scoring_metric = "accuracy" if self.model_type == "rulefit" else "roc_auc"
+        tscv = TimeSeriesSplit(n_splits=3)
+
         print(f"    Tuning {self.model_type.upper()} with RandomizedSearchCV (scoring: {scoring_metric})...")
         try:
             search = RandomizedSearchCV(
-                estimator, param_distributions=grid, n_iter=10, cv=3,
-                scoring=scoring_metric, n_jobs=-1, random_state=42, verbose=0
+                estimator, param_distributions=grid, n_iter=10, 
+                cv=tscv,
+                scoring=scoring_metric, n_jobs=-1, 
+                random_state=SEED, 
+                verbose=0
             )
             search.fit(X_tr, y_tr)
             best_model = search.best_estimator_
@@ -173,7 +192,6 @@ class BaseModel(ABC):
         
         if self.model_type == 'gp':
             feature_args = {f.replace('-', '_').replace(':', '_'): X_test[f].values for f in X_test.columns}
-            # The compiled GP function can return floats, ints, or booleans. We must be explicit.
             raw_entries = model(**feature_args)
             entries = np.asarray(raw_entries, dtype=bool)
             exits = ~entries

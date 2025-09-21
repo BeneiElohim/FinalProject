@@ -1,8 +1,3 @@
-"""
-Database schema for Signal Engine.
-- Strategy: Defines the "recipe" for a trading model (symbol, type, parameters).
-- Backtest: Records the performance of running a Strategy over a specific period.
-"""
 import os
 import hashlib
 import json
@@ -58,6 +53,7 @@ class Strategy(Base):
     model_type = Column(String, nullable=False, index=True)
     rules = Column(JSON, nullable=False)
     hyperparameters = Column(JSON)
+    strategic_params = Column(JSON)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     backtests = relationship("Backtest", back_populates="strategy", cascade="all, delete-orphan")
@@ -71,6 +67,7 @@ class Strategy(Base):
             'model_type': self.model_type,
             'rules': self.rules,
             'hyperparameters': self.hyperparameters,
+            'strategic_params': self.strategic_params,
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'updated_at': self.updated_at.isoformat() if self.updated_at else None,
             'best_backtest_metrics': best_backtest.to_dict().get('metrics') if best_backtest else {}
@@ -124,11 +121,17 @@ def get_session():
     finally:
         db.close()
 
-def generate_strategy_id(symbol: str, model_type: str, rules: dict, hyperparameters: Optional[dict] = None) -> str:
+def generate_strategy_id(
+    symbol: str, 
+    model_type: str, 
+    rules: dict, 
+    hyperparameters: Optional[dict] = None,
+    strategic_params: Optional[dict] = None
+) -> str:
     rules_str = json.dumps(rules, sort_keys=True)
     params_str = json.dumps(hyperparameters, sort_keys=True) if hyperparameters else ""
-    
-    key_string = f"{symbol}-{model_type}-{rules_str}-{params_str}"
+    strat_params_str = json.dumps(strategic_params, sort_keys=True) if strategic_params else ""
+    key_string = f"{symbol}-{model_type}-{rules_str}-{params_str}-{strat_params_str}"
     return hashlib.sha256(key_string.encode()).hexdigest()[:16]
 
 

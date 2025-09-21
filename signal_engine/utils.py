@@ -1,5 +1,17 @@
+import os
+import random
+import numpy as np
 from pathlib import Path
 from signal_engine.paths import FEAT_DIR, ROOT
+
+SEED = 42
+
+def set_global_seed(seed: int = SEED):
+    """Set seed for all relevant libraries to ensure reproducibility."""
+    os.environ['PYTHONHASHSEED'] = str(seed)
+    random.seed(seed)
+    np.random.seed(seed)
+    print(f"Global seed set to {seed}")
 
 def get_symbols(provided: list[str] | None) -> list[str]:
     """
@@ -20,4 +32,4 @@ def get_symbols(provided: list[str] | None) -> list[str]:
         if cands:
             return cands
             
-    return sorted(p.stem for p in FEAT_DIR.glob("*.csv"))
+    return sorted(p.stem for p in FEAT_DIR.glob("*.feather"))

@@ -10,7 +10,6 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import func, desc
 from sqlalchemy.orm import Session, joinedload
 
-# Add project root to path to allow imports from src
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from signal_engine.paths import FEAT_DIR
@@ -20,19 +19,17 @@ from src.models.db import get_session, Strategy, Backtest
 app = FastAPI(
     title="Signal Engine API",
     version="1.0.0",
-    description="API for accessing and analyzing AI-generated trading strategies."
+    description="API for accessing and analyzing AI-generated trading strategies.",
 )
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://localhost:5173"], # Add your frontend URL
+    allow_origins=["http://localhost:3000", "http://localhost:5173"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# --- API Endpoints ---
-@app.get("/", tags=["General"])
+@app.get("/", tags=["General"], dependencies=[]) 
 async def root():
     return {
         "status": "running",
@@ -40,18 +37,19 @@ async def root():
         "timestamp": datetime.utcnow().isoformat()
     }
 
-@app.get("/health", tags=["General"])
+@app.get("/health", tags=["General"], dependencies=[]) # Public health check
 async def health_check(db: Session = Depends(get_session)):
     checks = { "api": "ok", "database": "ok", "features_dir": "ok" }
     try:
         db.execute("SELECT 1")
     except Exception:
         checks["database"] = "failed"
-    if not FEAT_DIR.exists() or not any(FEAT_DIR.glob("*.csv")):
+    if not FEAT_DIR.exists():
+        checks["features_dir"] = "missing"
+    elif not any(FEAT_DIR.iterdir()):
         checks["features_dir"] = "empty"
-    status_code = 503 if "failed" in checks.values() or "empty" in checks.values() else 200
+    status_code = 503 if "failed" in checks.values() or "missing" in checks.values() else 200
     return JSONResponse(checks, status_code=status_code)
-
 @app.get("/symbols", tags=["Symbols"])
 async def list_symbols(db: Session = Depends(get_session)):
     symbols_from_db = db.query(Strategy.symbol).distinct().all()
@@ -64,7 +62,6 @@ async def list_symbols(db: Session = Depends(get_session)):
         {
             "symbol": sym,
             "strategy_count": count_by_symbol.get(sym, 0),
-            "has_features": True,
         }
         for sym in symbols
     ]
@@ -79,30 +76,21 @@ async def list_strategies(
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_session)
 ):
-    query = db.query(Strategy)
+    query = db.query(Strategy).options(joinedload(Strategy.backtests))
     if symbol:
         query = query.filter(Strategy.symbol == symbol)
     if model_type:
         query = query.filter(Strategy.model_type == model_type)
-    best_backtest_subq = (
-        db.query(
-            Backtest.strategy_id,
-            func.max(Backtest.sharpe_ratio).label("max_sharpe")
-        )
-        .group_by(Backtest.strategy_id)
-        .subquery()
-    )
-    query = query.join(best_backtest_subq, Strategy.id == best_backtest_subq.c.strategy_id)
+    
     if min_sharpe is not None:
-        query = query.filter(best_backtest_subq.c.max_sharpe >= min_sharpe)
+        query = query.join(Backtest).filter(Backtest.sharpe_ratio >= min_sharpe)
+
     total_count = query.count()
-    strategies = (
-        query.order_by(desc(best_backtest_subq.c.max_sharpe))
-        .options(joinedload(Strategy.backtests))
-        .limit(limit)
-        .offset(offset)
-        .all()
-    )
+
+    strategies = query.limit(limit).offset(offset).all()
+    
+    strategies.sort(key=lambda s: (max([b.sharpe_ratio for b in s.backtests] or [-999])), reverse=True)
+
     return {
         "strategies": [s.to_dict() for s in strategies],
         "total": total_count,

@@ -8,7 +8,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from train import MODEL_MAP
-from signal_engine.utils import get_symbols
+from signal_engine.utils import get_symbols, set_global_seed # <-- IMPORT IT
 from signal_engine.runner import run_for_symbol
 from src.models.db import SessionLocal, migrate_json_to_db
 
@@ -16,6 +16,7 @@ console = Console()
 
 def _flow(args):
     """Full end-to-end pipeline."""
+    set_global_seed() 
     console.print("[bold cyan]>>> Starting full pipeline flow...[/bold cyan]")
     
     symbols_to_process = get_symbols(args.syms)

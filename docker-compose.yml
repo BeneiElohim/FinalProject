@@ -52,6 +52,8 @@ services:
       ollama:
         condition: service_started
     entrypoint: ["/bin/sh", "-c"]
+    environment:
+      - OLLAMA_HOST=http://ollama:11434
     command:
       - |
         echo "Waiting for Ollama service to be ready..."

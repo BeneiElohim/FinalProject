@@ -4,9 +4,14 @@ import "./App.css";
 
 
 const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:8000";
-
 async function apiCall(endpoint, options = {}) {
-    const res = await fetch(`${API_BASE}${endpoint}`, options);
+    const res = await fetch(`${API_BASE}${endpoint}`, {
+        ...options,
+        headers: {
+            "Content-Type": "application/json",
+            ...(options.headers || {}),
+        },
+    });
     if (!res.ok) {
         const errorBody = await res.json().catch(() => ({ detail: res.statusText }));
         throw new Error(`API Error: ${res.status} - ${errorBody.detail}`);

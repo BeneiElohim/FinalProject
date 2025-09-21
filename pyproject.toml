@@ -23,6 +23,8 @@ rich = "^13.7"
 sqlalchemy = "^2.0.42"
 plotly = "<6"
 lxml = "^6.0.0"
+pyarrow = "^21.0.0"
+seaborn = "^0.13.2"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.2"
